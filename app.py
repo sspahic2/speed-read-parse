@@ -1,4 +1,5 @@
 import io
+import os
 import statistics
 from collections import Counter
 from typing import List, Dict, Any
@@ -7,8 +8,21 @@ from flask import Flask, jsonify, request
 import fitz  # PyMuPDF
 from ebooklib import epub, ITEM_DOCUMENT
 from bs4 import BeautifulSoup
+from werkzeug.exceptions import RequestEntityTooLarge
 
 app = Flask(__name__)
+
+# Limit upload size to guard against DOS/oversized files. Default 20 MB, overridable via env.
+def _parse_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except ValueError:
+        return default
+
+
+app.config["MAX_CONTENT_LENGTH"] = _parse_int_env(
+    "MAX_CONTENT_LENGTH", 20 * 1024 * 1024
+)
 
 
 def _apply_style(entry: Dict[str, Any], items: List[Dict[str, Any]]) -> None:
@@ -252,24 +266,60 @@ def extract_epub(file_stream) -> List[Dict[str, Any]]:
 @app.route("/extract", methods=["POST"])
 def extract():
     """Upload endpoint. Returns JSON with headings and paragraphs."""
+    max_len = app.config.get("MAX_CONTENT_LENGTH")
+    if request.content_length is not None and max_len and request.content_length > max_len:
+        return (
+            jsonify(
+                {
+                    "error": "file too large",
+                    "limit_bytes": max_len,
+                }
+            ),
+            413,
+        )
+
     if "file" not in request.files:
         return jsonify({"error": "file is required"}), 400
 
     uploaded_file = request.files["file"]
     filename = uploaded_file.filename or ""
+    if not filename:
+        return jsonify({"error": "filename is required"}), 400
+
     lowered = filename.lower()
 
-    if lowered.endswith(".pdf"):
-        blocks = extract_pdf(uploaded_file.stream)
-        file_type = "pdf"
-    elif lowered.endswith(".epub"):
-        uploaded_file.stream.seek(0)
-        blocks = extract_epub(uploaded_file.stream)
-        file_type = "epub"
-    else:
-        return jsonify({"error": "unsupported file type; upload a PDF or EPUB"}), 400
+    try:
+        if lowered.endswith(".pdf"):
+            blocks = extract_pdf(uploaded_file.stream)
+            file_type = "pdf"
+        elif lowered.endswith(".epub"):
+            uploaded_file.stream.seek(0)
+            blocks = extract_epub(uploaded_file.stream)
+            file_type = "epub"
+        else:
+            return (
+                jsonify({"error": "unsupported file type; upload a PDF or EPUB"}),
+                400,
+            )
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("Failed to parse upload")
+        return jsonify({"error": "failed to parse file", "detail": str(exc)}), 400
 
     return jsonify({"file_type": file_type, "content": blocks})
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(error):
+    limit = app.config.get("MAX_CONTENT_LENGTH")
+    return (
+        jsonify(
+            {
+                "error": "file too large",
+                "limit_bytes": limit,
+            }
+        ),
+        413,
+    )
 
 
 if __name__ == "__main__":

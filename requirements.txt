@@ -3,3 +3,4 @@ pymupdf
 ebooklib
 beautifulsoup4
 lxml
+gunicorn
