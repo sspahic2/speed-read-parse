@@ -1,11 +1,19 @@
 """Gunicorn configuration defaults suitable for container or VM deployment."""
-import multiprocessing
 import os
 
 bind = f"0.0.0.0:{os.getenv('PORT', '8000')}"
 
-# Allow overriding via WEB_CONCURRENCY; otherwise derive from CPU count.
-workers = int(os.getenv("WEB_CONCURRENCY", max(1, multiprocessing.cpu_count() * 2 + 1)))
+# Keep worker count low to avoid per-process memory overhead from heavy deps (PyMuPDF, lxml).
+# Override with WEB_CONCURRENCY if you need more throughput.
+workers = int(os.getenv("WEB_CONCURRENCY", "1"))
+
+# Use a few threads instead of more processes to stay within small RAM plans.
+worker_class = "gthread"
+threads = int(os.getenv("WEB_THREADS", "2"))
+
+# Periodically recycle workers to shed any leaks.
+max_requests = int(os.getenv("WEB_MAX_REQUESTS", "200"))
+max_requests_jitter = int(os.getenv("WEB_MAX_REQUESTS_JITTER", "50"))
 
 # Tune timeouts/keepalive via env vars if needed.
 timeout = int(os.getenv("WEB_TIMEOUT", "60"))
